@@ -1,0 +1,116 @@
+# Docker Compose configuration for Material Management System
+# This file defines the complete application stack including database, backend API, and frontend
+
+version: '3.8'
+
+services:
+  # SQL Server Database
+  database:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: material-mgmt-db
+    environment:
+      # SQL Server configuration
+      ACCEPT_EULA: Y
+      SA_PASSWORD: MaterialMgmt123!
+      MSSQL_PID: Express
+    ports:
+      - "1433:1433"
+    volumes:
+      # Persist database data
+      - sqlserver_data:/var/opt/mssql
+      # Initialize database with schema
+      - ./Database/DEV_1_ABAZA_BULDING_MATRIAL.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - material-mgmt-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P MaterialMgmt123! -Q 'SELECT 1'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Backend API (ASP.NET Core)
+  backend:
+    build:
+      context: ./Backend/MaterialManagementAPI
+      dockerfile: Dockerfile
+    container_name: material-mgmt-api
+    environment:
+      # Database connection
+      ConnectionStrings__DefaultConnection: "Server=database,1433;Database=MaterialManagementDB;User Id=sa;Password=MaterialMgmt123!;TrustServerCertificate=true;MultipleActiveResultSets=true"
+      # JWT configuration
+      JwtSettings__SecretKey: "YourSuperSecretKeyThatIsAtLeast32CharactersLong!"
+      JwtSettings__Issuer: "MaterialManagementAPI"
+      JwtSettings__Audience: "MaterialManagementClient"
+      JwtSettings__ExpirationInMinutes: "60"
+      # ASP.NET Core environment
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: "http://+:80"
+    ports:
+      - "5000:80"
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - material-mgmt-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Frontend (React)
+  frontend:
+    build:
+      context: ./material-management-frontend
+      dockerfile: Dockerfile
+    container_name: material-mgmt-frontend
+    environment:
+      # API endpoint configuration
+      VITE_API_BASE_URL: "http://localhost:5000/api"
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - material-mgmt-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Nginx Reverse Proxy (Optional - for production)
+  nginx:
+    image: nginx:alpine
+    container_name: material-mgmt-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - material-mgmt-network
+    restart: unless-stopped
+    profiles:
+      - production
+
+# Named volumes for data persistence
+volumes:
+  sqlserver_data:
+    driver: local
+
+# Custom network for service communication
+networks:
+  material-mgmt-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
